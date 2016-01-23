@@ -1,5 +1,6 @@
 package com.fkzhang.qqunrecalled;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -7,12 +8,13 @@ import java.util.Random;
 import java.util.Set;
 
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
+import de.robv.android.xposed.XposedHelpers;
 
 import static de.robv.android.xposed.XposedHelpers.callMethod;
 import static de.robv.android.xposed.XposedHelpers.callStaticMethod;
 import static de.robv.android.xposed.XposedHelpers.findAndHookMethod;
 import static de.robv.android.xposed.XposedHelpers.findClass;
-import static de.robv.android.xposed.XposedHelpers.getObjectField;
 import static de.robv.android.xposed.XposedHelpers.setObjectField;
 
 /**
@@ -21,20 +23,21 @@ import static de.robv.android.xposed.XposedHelpers.setObjectField;
 public class QQUnrecalledHook {
     private Set<String> RevokedUids;
     private Class<?> MessageRecordFactory;
+    private Object mQQAppInterface;
+    private String mSelfUin;
+    private Class<?> ContactUtils;
 
-    public QQUnrecalledHook(){
+    public QQUnrecalledHook() {
         RevokedUids = new HashSet<>();
     }
 
-    public void hook(ClassLoader loader) {
+    public void hook(final ClassLoader loader) {
         try {
             hookQQMessageFacade(loader);
         } catch (Throwable t) {
-//            XposedBridge.log(t);
+            XposedBridge.log(t);
         }
-
     }
-
 
     protected void hookQQMessageFacade(final ClassLoader loader) {
         findAndHookMethod("com.tencent.mobileqq.app.message.QQMessageFacade", loader,
@@ -49,8 +52,7 @@ public class QQUnrecalledHook {
                         Object obj = list.get(0);
                         param.setResult(null); // prevent call
 
-                        if (MessageRecordFactory == null)
-                            MessageRecordFactory = findClass("com.tencent.mobileqq.service.message.MessageRecordFactory", loader);
+                        initObjects(param.thisObject, loader);
 
                         setMessageTip(param.thisObject, obj);
 
@@ -58,33 +60,67 @@ public class QQUnrecalledHook {
                 });
     }
 
-    private void setMessageTip(Object QQMessageFacade, Object revokeMsgInfo) {
-        String tostring = revokeMsgInfo.toString();
-        String msguid = extractValue("msguid", tostring);
-        if(RevokedUids.contains(msguid)){
-            return;
+    private void initObjects(Object thisObject, ClassLoader loader) {
+        if (mQQAppInterface == null) {
+            mQQAppInterface = getObjectField(thisObject, "a",
+                    "com.tencent.mobileqq.app.QQAppInterface");
         }
-        RevokedUids.add(msguid);
+        if (mSelfUin == null && mQQAppInterface != null) {
+            mSelfUin = (String) callMethod(mQQAppInterface, "getAccount");
+        }
+        if (MessageRecordFactory == null)
+            MessageRecordFactory = findClass("com.tencent.mobileqq.service.message.MessageRecordFactory", loader);
 
-        String selfUin = (String) getObjectField(revokeMsgInfo, "a");
-        String friendUin = (String) getObjectField(revokeMsgInfo, "b");
-
-        String msg = "对方尝试撤回一条消息 （已阻止）";
-        long time = System.currentTimeMillis() / 1000;
-        int istroop = Integer.parseInt(extractValue("istroop", tostring));
-        long msgUid = Long.parseLong(msguid) + new Random().nextInt();
-        long shmsgseq = Long.parseLong(extractValue("shmsgseq", tostring)) + 1;
-
-        callMethod(QQMessageFacade, "a", createMessageTip(selfUin, friendUin, msgUid, shmsgseq, time,
-                msg, istroop), selfUin);
+        if (ContactUtils == null) {
+            ContactUtils = findClass("com.tencent.mobileqq.utils.ContactUtils", loader);
+        }
     }
 
-    private List createMessageTip(String selfUin, String friendUin, long msgUid, long shmsgseq,
+    private void setMessageTip(Object QQMessageFacade, Object revokeMsgInfo) {
+        String tostring = revokeMsgInfo.toString();
+        String t = extractValue("time", tostring);
+        String msguid = extractValue("msguid", tostring);
+
+        if (RevokedUids.contains(t)) {
+            return;
+        }
+        RevokedUids.add(t);
+
+        String friendUin = (String) getObjectField(revokeMsgInfo, "a");
+        String senderUin = (String) getObjectField(revokeMsgInfo, "b");
+
+        long time = System.currentTimeMillis() / 1000;
+        int istroop = Integer.parseInt(extractValue("istroop", tostring));
+        long msgUid = Long.parseLong(msguid)
+                + new Random().nextInt();
+        long shmsgseq = Long.parseLong(extractValue("shmsgseq", tostring));
+        String msg;
+        if (istroop == 0) {
+            msg = "对方";
+        } else {
+            msg = getFriendName(friendUin, senderUin);
+        }
+        msg += "尝试撤回一条消息 （已阻止）";
+        List tips = createMessageTip(friendUin, senderUin, msgUid, shmsgseq, time,
+                msg, istroop);
+        if (tips == null || tips.isEmpty())
+            return;
+
+        callMethod(QQMessageFacade, "a", tips, mSelfUin);
+    }
+
+    private List createMessageTip(String friendUin, String senderUin, long msgUid, long shmsgseq,
                                   long time, String msg, int istroop) {
         int msgtype = -2031; // MessageRecord.MSG_TYPE_REVOKE_GRAY_TIPS
         Object messageRecord = callStaticMethod(MessageRecordFactory, "a", msgtype);
-        callMethod(messageRecord, "init", selfUin, friendUin, friendUin, msg, time, msgtype,
-                istroop, time);
+        if (istroop == 0) { // singlechat revoke
+            callMethod(messageRecord, "init", mSelfUin, senderUin, senderUin, msg, time, msgtype,
+                    istroop, time);
+        } else { // groupchat revoke
+            callMethod(messageRecord, "init", mSelfUin, friendUin, senderUin, msg, time, msgtype,
+                    istroop, time);
+        }
+
         setObjectField(messageRecord, "msgUid", msgUid);
         setObjectField(messageRecord, "shmsgseq", shmsgseq);
         setObjectField(messageRecord, "isread", true);
@@ -106,5 +142,28 @@ public class QQUnrecalledHook {
         return startText.substring(0, idx2).trim();
     }
 
+    protected String getFriendName(String friendUin, String senderUin) {
+        return (String) callStaticMethod(ContactUtils, "a", mQQAppInterface, senderUin,
+                friendUin, 2, 0);
+    }
+
+    public static Object getObjectField(Object o, String fieldName, String type) {
+        Field[] fields = o.getClass().getDeclaredFields();
+        for (Field field : fields) {
+            if (field.getName().equals(fieldName) && field.getType().getName().equals(type)) {
+                field.setAccessible(true);
+                try {
+                    return field.get(o);
+                } catch (Exception e) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    public static Object getObjectField(Object o, String fieldName) {
+        return XposedHelpers.getObjectField(o, fieldName);
+    }
 
 }
