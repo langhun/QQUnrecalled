@@ -54,7 +54,11 @@ public class QQUnrecalledHook {
 
                         initObjects(param.thisObject, loader);
 
-                        setMessageTip(param.thisObject, obj);
+                        try {
+                            setMessageTip(param.thisObject, obj);
+                        } catch (Throwable t) {
+                            XposedBridge.log(t);
+                        }
 
                     }
                 });
@@ -86,8 +90,8 @@ public class QQUnrecalledHook {
         }
         RevokedUids.add(t);
 
-        String friendUin = (String) getObjectField(revokeMsgInfo, "a");
-        String senderUin = (String) getObjectField(revokeMsgInfo, "b");
+        String friendUin = (String) getObjectField(revokeMsgInfo, "a", String.class);
+        String senderUin = (String) getObjectField(revokeMsgInfo, "b", String.class);
 
         long time = System.currentTimeMillis() / 1000;
         int istroop = Integer.parseInt(extractValue("istroop", tostring));
@@ -113,10 +117,10 @@ public class QQUnrecalledHook {
                                   long time, String msg, int istroop) {
         int msgtype = -2031; // MessageRecord.MSG_TYPE_REVOKE_GRAY_TIPS
         Object messageRecord = callStaticMethod(MessageRecordFactory, "a", msgtype);
-        if (istroop == 0) { // singlechat revoke
+        if (istroop == 0) { // private chat revoke
             callMethod(messageRecord, "init", mSelfUin, senderUin, senderUin, msg, time, msgtype,
                     istroop, time);
-        } else { // groupchat revoke
+        } else { // group chat revoke
             callMethod(messageRecord, "init", mSelfUin, friendUin, senderUin, msg, time, msgtype,
                     istroop, time);
         }
@@ -160,6 +164,10 @@ public class QQUnrecalledHook {
             }
         }
         return null;
+    }
+
+    public static Object getObjectField(Object o, String fieldName, Class<?> type) {
+        return getObjectField(o, fieldName, type.getName());
     }
 
     public static Object getObjectField(Object o, String fieldName) {
